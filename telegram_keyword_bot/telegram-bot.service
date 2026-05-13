@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Keyword Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/telegram_keyword_bot
+EnvironmentFile=/root/telegram_keyword_bot/.env
+ExecStart=/root/telegram_keyword_bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
