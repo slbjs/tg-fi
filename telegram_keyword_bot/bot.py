@@ -3,7 +3,8 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    CallbackQueryHandler, ConversationHandler,
+    ContextTypes, filters
 )
 from database import db
 
@@ -16,136 +17,227 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
+# ─── Conversation States ───────────────────────────────────────────────────────
+WAIT_KEYWORD, WAIT_IMAGE, WAIT_CAPTION, WAIT_BTN_TEXT, WAIT_BTN_URL = range(5)
+
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-# ─── Admin Commands ────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  /start
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 සලාමුන් !\n\n"
-        "මම keyword bot එකක්. Group එකේ keyword type කරන්න, reply දෙන්නම්.\n\n"
-        "Admin commands:\n"
-        "/addkeyword <keyword> | <reply> - Keyword add කරන්න\n"
-        "/listkeywords - සියලු keywords බලන්න\n"
-        "/deletekeyword <keyword> - Keyword delete කරන්න"
-    )
-
-
-async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a keyword: /addkeyword keyword | reply text"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin විතරයි keyword add කරන්න පුළුවන්.")
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: /addkeyword <keyword> | <reply>\n"
-            "Example: /addkeyword daredevil born again | Daredevil: Born Again (2025-)"
+    user = update.effective_user
+    if is_admin(user.id):
+        msg = (
+            "👋 <b>Admin Panel</b>\n\n"
+            "🎬 <b>Movie Filter Bot</b>\n\n"
+            "<b>Commands:</b>\n"
+            "➕ /addmovie — New movie keyword add කරන්න\n"
+            "📋 /listmovies — සියලු movies බලන්න\n"
+            "🗑 /deletemovie — Movie delete කරන්න\n"
         )
-        return
-
-    text = " ".join(context.args)
-    if "|" not in text:
-        await update.message.reply_text("❌ '|' separator use කරන්න keyword සහ reply වෙන් කරන්න.")
-        return
-
-    keyword, reply = text.split("|", 1)
-    keyword = keyword.strip().lower()
-    reply = reply.strip()
-
-    if not keyword or not reply:
-        await update.message.reply_text("❌ Keyword සහ reply දෙකම ඕනෑ.")
-        return
-
-    await db.upsert_keyword(keyword, reply)
-    await update.message.reply_text(f"✅ Keyword saved!\n\n🔑 Keyword: `{keyword}`\n💬 Reply: {reply}", parse_mode="Markdown")
+    else:
+        msg = (
+            "👋 <b>Movie Filter Bot</b>\n\n"
+            "Group එකේ movie name type කරන්න.\n"
+            "Bot reply දෙනවා! 🎬"
+        )
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 
-async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all keywords"""
+# ══════════════════════════════════════════════════════════════════════════════
+#  /addmovie  —  Multi-step ConversationHandler
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def addmovie_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin විතරයි keywords බලන්න පුළුවන්.")
-        return
+        await update.message.reply_text("❌ Admin විතරයි movie add කරන්න පුළුවන්.")
+        return ConversationHandler.END
 
-    keywords = await db.get_all_keywords()
-    if not keywords:
-        await update.message.reply_text("📭 Keywords නෑ. /addkeyword use කරලා add කරන්න.")
-        return
+    context.user_data.clear()
+    await update.message.reply_text(
+        "🎬 <b>Step 1/4</b>\n\n"
+        "Movie keyword type කරන්න:\n"
+        "<i>(Example: daredevil born again)</i>\n\n"
+        "Cancel කරන්න: /cancel",
+        parse_mode="HTML"
+    )
+    return WAIT_KEYWORD
 
-    msg = "📋 *Saved Keywords:*\n\n"
-    for kw in keywords:
-        msg += f"🔑 `{kw['keyword']}` → {kw['reply'][:50]}{'...' if len(kw['reply']) > 50 else ''}\n"
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+async def received_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyword = update.message.text.strip().lower()
+    context.user_data["keyword"] = keyword
+    await update.message.reply_text(
+        f"✅ Keyword: <code>{keyword}</code>\n\n"
+        "🖼 <b>Step 2/4</b>\n\n"
+        "Movie poster/image send කරන්න:\n"
+        "<i>(Image upload කරන්න)</i>",
+        parse_mode="HTML"
+    )
+    return WAIT_IMAGE
 
 
-async def delete_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a keyword: /deletekeyword keyword"""
+async def received_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text("❌ Image එකක් send කරන්න. (Photo upload කරන්න)")
+        return WAIT_IMAGE
+
+    photo = update.message.photo[-1]
+    context.user_data["photo_file_id"] = photo.file_id
+
+    await update.message.reply_text(
+        "✅ Image received!\n\n"
+        "📝 <b>Step 3/4</b>\n\n"
+        "Movie caption/description type කරන්න:\n"
+        "<i>HTML tags use කරන්න පුළුවන්: &lt;b&gt;bold&lt;/b&gt;, &lt;i&gt;italic&lt;/i&gt;</i>\n\n"
+        "Example:\n"
+        "<code>🎬 Daredevil: Born Again (2025)\n\n"
+        "📌 Genre: Action, Crime\n"
+        "⭐ Rating: 8.2/10\n"
+        "🌐 Language: English</code>",
+        parse_mode="HTML"
+    )
+    return WAIT_CAPTION
+
+
+async def received_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["caption"] = update.message.text
+
+    await update.message.reply_text(
+        "✅ Caption saved!\n\n"
+        "🔘 <b>Step 4/4</b>\n\n"
+        "Download button text type කරන්න:\n"
+        "<i>(Example: <code>⬇️ Download</code> or <code>📥 Download HD</code>)</i>",
+        parse_mode="HTML"
+    )
+    return WAIT_BTN_TEXT
+
+
+async def received_btn_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["btn_text"] = update.message.text.strip()
+
+    await update.message.reply_text(
+        f"✅ Button text: <code>{context.user_data['btn_text']}</code>\n\n"
+        "🔗 Download link (URL) type කරන්න:\n"
+        "<i>(Example: https://t.me/yourchannel/123)</i>",
+        parse_mode="HTML"
+    )
+    return WAIT_BTN_URL
+
+
+async def received_btn_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+
+    if not url.startswith("http"):
+        await update.message.reply_text("❌ Valid URL එකක් දෙන්න. (https:// ලින් start කරන්න)")
+        return WAIT_BTN_URL
+
+    keyword       = context.user_data["keyword"]
+    photo_file_id = context.user_data["photo_file_id"]
+    caption       = context.user_data["caption"]
+    btn_text      = context.user_data["btn_text"]
+
+    await db.upsert_movie(keyword, photo_file_id, caption, btn_text, url)
+
+    keyboard = [[InlineKeyboardButton(btn_text, url=url)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("✅ <b>Movie saved! Preview:</b>", parse_mode="HTML")
+    await update.message.reply_photo(
+        photo=photo_file_id,
+        caption=caption,
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("❌ Cancelled.")
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  /listmovies
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def list_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin විතරයි keyword delete කරන්න පුළුවන්.")
+        await update.message.reply_text("❌ Admin විතරයි list බලන්න පුළුවන්.")
+        return
+
+    movies = await db.get_all_movies()
+    if not movies:
+        await update.message.reply_text("📭 Movies නෑ. /addmovie use කරලා add කරන්න.")
+        return
+
+    msg = "📋 <b>Saved Movies:</b>\n\n"
+    for i, m in enumerate(movies, 1):
+        msg += f"{i}. 🎬 <code>{m['keyword']}</code>\n"
+
+    msg += "\n<i>Delete කරන්න: /deletemovie &lt;keyword&gt;</i>"
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  /deletemovie
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def delete_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Admin විතරයි delete කරන්න පුළුවන්.")
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /deletekeyword <keyword>")
+        await update.message.reply_text("Usage: /deletemovie <keyword>\nExample: /deletemovie daredevil born again")
         return
 
     keyword = " ".join(context.args).strip().lower()
-    deleted = await db.delete_keyword(keyword)
+    deleted = await db.delete_movie(keyword)
 
     if deleted:
-        await update.message.reply_text(f"✅ `{keyword}` deleted!", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ <code>{keyword}</code> deleted!", parse_mode="HTML")
     else:
-        await update.message.reply_text(f"❌ `{keyword}` keyword හොයාගන්න බැරි වුනා.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ <code>{keyword}</code> හොයාගන්න බැරි වුනා.", parse_mode="HTML")
 
 
-# ─── Message Handler ────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  Group message handler — keyword detection
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check if message matches any keyword and reply"""
     message = update.message
     if not message or not message.text:
         return
 
     text = message.text.strip().lower()
-    user_name = message.from_user.first_name or "User"
 
-    # Check exact match first, then partial match
-    keyword_data = await db.find_keyword(text)
-    if not keyword_data:
-        # Try partial match
-        keyword_data = await db.find_keyword_partial(text)
+    movie = await db.find_movie(text)
+    if not movie:
+        movie = await db.find_movie_partial(text)
 
-    if keyword_data:
-        reply_text = keyword_data["reply"]
-        buttons = keyword_data.get("buttons", [])
+    if movie:
+        keyboard = [[InlineKeyboardButton(movie["btn_text"], url=movie["btn_url"])]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        keyboard = []
-        for btn in buttons:
-            keyboard.append([InlineKeyboardButton(btn["text"], callback_data=btn.get("data", btn["text"]))])
-
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-        # Format reply with user's name
-        formatted_reply = reply_text.replace("{name}", user_name).replace("{keyword}", text)
-
-        await message.reply_text(
-            formatted_reply,
+        await message.reply_photo(
+            photo=movie["photo_file_id"],
+            caption=movie["caption"],
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
 
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button presses"""
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text(f"ඔබ '{query.data}' click කළා.")
-
-
-# ─── Main ───────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  Main
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def post_init(application: Application):
     await db.connect()
@@ -158,14 +250,27 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
+    add_conv = ConversationHandler(
+        entry_points=[CommandHandler("addmovie", addmovie_start)],
+        states={
+            WAIT_KEYWORD:  [MessageHandler(filters.TEXT & ~filters.COMMAND, received_keyword)],
+            WAIT_IMAGE:    [MessageHandler(filters.PHOTO, received_image),
+                            MessageHandler(filters.TEXT & ~filters.COMMAND, received_image)],
+            WAIT_CAPTION:  [MessageHandler(filters.TEXT & ~filters.COMMAND, received_caption)],
+            WAIT_BTN_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_btn_text)],
+            WAIT_BTN_URL:  [MessageHandler(filters.TEXT & ~filters.COMMAND, received_btn_url)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addkeyword", add_keyword))
-    app.add_handler(CommandHandler("listkeywords", list_keywords))
-    app.add_handler(CommandHandler("deletekeyword", delete_keyword))
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(add_conv)
+    app.add_handler(CommandHandler("listmovies", list_movies))
+    app.add_handler(CommandHandler("deletemovie", delete_movie))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot starting... 🚀")
+    logger.info("Movie Filter Bot starting... 🚀")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
