@@ -16,8 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
+BOT_TOKEN=8720377838:AAFBfWJJFsaqA58idhX5SUO3EbLea2j9Kik
+ADMIN_IDS=6046457212
+MONGO_URI=mongodb+srv://pasindubhagya733:<db_password>@cluster0.lhimv.mongodb.net/?appName=Cluster0
+DB_NAME=RenameTg
 
 # ─── Conversation States ───────────────────────────────────────────────────────
 WAIT_KEYWORD, WAIT_IMAGE, WAIT_CAPTION, WAIT_BTN_TEXT, WAIT_BTN_URL = range(5)
